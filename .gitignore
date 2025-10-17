@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtualenv
+.venv/
+
+# Local env
+.env
+run.log
+
+# macOS
+.DS_Store
+
+# Misc
+*.swp
+*.swo

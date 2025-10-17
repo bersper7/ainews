@@ -1,0 +1,5 @@
+notion-client>=2.2.1
+feedparser>=6.0.10
+python-dotenv>=1.0.1
+openai>=1.44.0
+requests>=2.31.0

@@ -1,0 +1,45 @@
+name: GeekNews to Notion
+
+on:
+  schedule:
+    - cron: "0 23 * * *" # 08:00 KST (UTC+9)
+    - cron: "0 11 * * *" # 20:00 KST (UTC+9)
+  workflow_dispatch: {}
+
+concurrency:
+  group: geeknews-to-notion
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run importer
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          # Optional
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          FEED_URL: ${{ vars.FEED_URL }}
+          SUMMARY_LANGUAGE: ${{ vars.SUMMARY_LANGUAGE }}
+          MAX_ITEMS: ${{ vars.MAX_ITEMS }}
+          INCLUDE_KEYWORDS: ${{ vars.INCLUDE_KEYWORDS }}
+          EXCLUDE_KEYWORDS: ${{ vars.EXCLUDE_KEYWORDS }}
+          MIN_POINTS: ${{ vars.MIN_POINTS }}
+        run: |
+          python geeknews_to_notion.py
