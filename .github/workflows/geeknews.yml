@@ -41,5 +41,16 @@ jobs:
           INCLUDE_KEYWORDS: ${{ vars.INCLUDE_KEYWORDS }}
           EXCLUDE_KEYWORDS: ${{ vars.EXCLUDE_KEYWORDS }}
           MIN_POINTS: ${{ vars.MIN_POINTS }}
+          PAGE_CONTENT_MODE: ${{ vars.PAGE_CONTENT_MODE }}
+          ADD_PAGE_CONTENT: ${{ vars.ADD_PAGE_CONTENT }}
+          BACKFILL_EXISTING: ${{ vars.BACKFILL_EXISTING }}
+          BACKFILL_LIMIT: ${{ vars.BACKFILL_LIMIT }}
         run: |
+          # Defaults if repository variables are not defined
+          : "${PAGE_CONTENT_MODE:=translate}"
+          : "${ADD_PAGE_CONTENT:=true}"
+          : "${BACKFILL_EXISTING:=true}"
+          : "${BACKFILL_LIMIT:=30}"
+          : "${SUMMARY_LANGUAGE:=ko}"
+          : "${MAX_ITEMS:=30}"
           python geeknews_to_notion.py

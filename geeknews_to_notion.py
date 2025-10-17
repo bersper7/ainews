@@ -67,6 +67,43 @@ def summarize_with_openai(title: str, url: str, description: Optional[str] = Non
         return None
 
 
+def fetch_main_text(url: str, timeout: int = 20) -> Optional[str]:
+    try:
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Referer": "https://news.hada.io/",
+            },
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        r.raise_for_status()
+    except Exception:
+        return None
+    try:
+        if Document is not None:
+            doc = Document(r.text)
+            html = doc.summary(html_partial=True)
+            soup = BeautifulSoup(html, "lxml")
+            text = "\n\n".join(p.get_text(" ", strip=True) for p in soup.find_all(["p", "li"]))
+        else:
+            soup = BeautifulSoup(r.text, "lxml")
+            candidates = soup.select("article, main, .post, .content, .entry, #content")
+            if not candidates:
+                candidates = [soup]
+            best = max(candidates, key=lambda el: len(el.get_text(" ", strip=True)))
+            text = "\n\n".join(p.get_text(" ", strip=True) for p in best.find_all(["p", "li"]))
+        text = (text or "").strip()
+        if len(text) > 8000:
+            text = text[:8000]
+        return text or None
+    except Exception:
+        return None
+
+
 def notion_find_by_url(notion: NotionClient, database_id: str, url: str) -> bool:
     try:
         res = notion.databases.query(
@@ -121,7 +158,10 @@ def notion_create_page(
     if add_content:
         generated_text = None
         mode_for_llm = "translate" if page_mode in ("translate", "translation") else ("detailed" if page_mode == "detailed" else "short")
-        generated_text = summarize_with_openai(title or "", url, summary or None, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
+        seed_text = summary or None
+        if mode_for_llm == "translate":
+            seed_text = fetch_main_text(url) or summary or None
+        generated_text = summarize_with_openai(title or "", url, seed_text, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
 
         heading_label = "번역 (KR)" if mode_for_llm == "translate" else "요약 (KR)"
         if generated_text:
@@ -414,17 +454,17 @@ def backfill_page_content(notion: NotionClient, database_id: str, limit: int = 2
         if not pid or not url:
             continue
         try:
-            blocks = notion.blocks.children.list(block_id=pid, page_size=10)
-            has_section = False
+            blocks = notion.blocks.children.list(block_id=pid, page_size=20)
+            has_translation = False
             for b in blocks.get("results", []):
                 t = b.get("type")
                 if t == "heading_2":
                     texts = b.get(t, {}).get("rich_text", [])
                     label = "".join([x.get("plain_text", "") for x in texts])
-                    if "요약" in label or "번역" in label:
-                        has_section = True
+                    if "번역" in label:
+                        has_translation = True
                         break
-            if has_section:
+            if has_translation:
                 continue
         except APIResponseError as e:
             print(f"[warn] backfill blocks list failed: {e}")
@@ -433,7 +473,10 @@ def backfill_page_content(notion: NotionClient, database_id: str, limit: int = 2
         # Generate translation content
         page_mode = os.getenv("PAGE_CONTENT_MODE", "translate").lower()
         mode_for_llm = "translate" if page_mode in ("translate", "translation") else ("detailed" if page_mode == "detailed" else "short")
-        text = summarize_with_openai(title or "", url, None, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
+        seed_text = None
+        if mode_for_llm == "translate":
+            seed_text = fetch_main_text(url)
+        text = summarize_with_openai(title or "", url, seed_text, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
         if not text:
             continue
         heading_label = "번역 (KR)" if mode_for_llm == "translate" else "요약 (KR)"
