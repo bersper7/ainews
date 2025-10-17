@@ -9,6 +9,10 @@ from notion_client.errors import APIResponseError
 from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
+try:
+    from readability import Document  # type: ignore
+except Exception:
+    Document = None
 
 
 def isoformat(dt_struct):
@@ -18,7 +22,7 @@ def isoformat(dt_struct):
         return None
 
 
-def summarize_with_openai(title: str, url: str, description: Optional[str] = None, lang: str = "ko") -> Optional[str]:
+def summarize_with_openai(title: str, url: str, description: Optional[str] = None, lang: str = "ko", mode: str = "short") -> Optional[str]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
@@ -28,11 +32,26 @@ def summarize_with_openai(title: str, url: str, description: Optional[str] = Non
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
-        content_hint = f"\n본문: {description[:800]}" if description else ""
-        prompt = (
-            f"다음 링크의 기사 내용을 {lang}로 2~3문장으로 간결히 요약해 주세요.\n"
-            f"제목: {title}\n링크: {url}{content_hint}"
-        )
+        content_hint = f"\n본문 요약/발췌: {description[:1200]}" if description else ""
+        if mode == "detailed":
+            prompt = (
+                f"다음 링크의 콘텐츠를 {lang}로 핵심 정리해 주세요.\n"
+                f"- 형식: 4~7개 불릿 포인트, 가능한 한 구체적으로.\n"
+                f"- 불필요한 수식어 최소화, 핵심 내용 위주.\n"
+                f"제목: {title}\n링크: {url}{content_hint}"
+            )
+        elif mode == "translate":
+            prompt = (
+                f"다음 링크의 글 주요 내용을 {lang}로 자연스럽게 번역·정리해 주세요.\n"
+                f"- 형식: 문단 중심, 핵심 주제별로 3~6개 문단.\n"
+                f"- 과한 의역은 피하고, 맥락은 유지해서 읽기 쉽게.\n"
+                f"제목: {title}\n링크: {url}{content_hint}"
+            )
+        else:
+            prompt = (
+                f"다음 링크의 기사 내용을 {lang}로 2~3문장으로 간결히 요약해 주세요.\n"
+                f"제목: {title}\n링크: {url}{content_hint}"
+            )
 
         resp = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -86,7 +105,60 @@ def notion_create_page(
     if tags:
         properties["Tags"] = {"multi_select": [{"name": t} for t in tags[:10]]}
 
-    return notion.pages.create(parent={"database_id": database_id}, properties=properties)
+    # Page content blocks (children)
+    children = []
+    # Bookmark to original link
+    if url:
+        children.append({
+            "object": "block",
+            "type": "bookmark",
+            "bookmark": {"url": url},
+        })
+
+    # Detailed KR translation/summary section
+    add_content = os.getenv("ADD_PAGE_CONTENT", "true").lower() in ("1", "true", "yes")
+    page_mode = os.getenv("PAGE_CONTENT_MODE", "translate").lower()  # translate | detailed | short
+    if add_content:
+        generated_text = None
+        mode_for_llm = "translate" if page_mode in ("translate", "translation") else ("detailed" if page_mode == "detailed" else "short")
+        generated_text = summarize_with_openai(title or "", url, summary or None, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
+
+        heading_label = "번역 (KR)" if mode_for_llm == "translate" else "요약 (KR)"
+        if generated_text:
+            children.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading_label}}]},
+            })
+            # If translate mode, prefer paragraphs; else bullet lines
+            if mode_for_llm == "translate":
+                for para in [p.strip() for p in (generated_text.split("\n\n") or []) if p.strip()]:
+                    children.append({
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": para}}]},
+                    })
+            else:
+                for line in [l.strip("- •\t ") for l in (generated_text.splitlines() or []) if l.strip()]:
+                    children.append({
+                        "object": "block",
+                        "type": "bulleted_list_item",
+                        "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line}}]},
+                    })
+        elif summary:
+            # Fallback to a single paragraph with short summary
+            children.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading_label}}]},
+            })
+            children.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": summary}}]},
+            })
+
+    return notion.pages.create(parent={"database_id": database_id}, properties=properties, children=children or None)
 
 
 def main():
@@ -290,8 +362,8 @@ def main():
             print("  ↳ already exists, skip")
             continue
 
-        # Summarize (optional)
-        summary = summarize_with_openai(title or "", link, description, lang=summary_lang)
+        # Summarize (optional): only for property Summary (1-line)
+        short_summary = summarize_with_openai(title or "", link, description, lang=summary_lang, mode="short")
 
         # Date
         published_iso = isoformat(published) if published else None
@@ -303,7 +375,7 @@ def main():
                 database_id,
                 title=title or link,
                 url=link,
-                summary=summary,
+                summary=short_summary or (description or None),
                 published_iso=published_iso,
                 tags=tags,
             )
@@ -317,6 +389,96 @@ def main():
 
     print(f"[done] Created {created} new pages")
 
+def backfill_page_content(notion: NotionClient, database_id: str, limit: int = 20):
+    # Query recent pages and add content if missing
+    try:
+        res = notion.databases.query(
+            **{
+                "database_id": database_id,
+                "page_size": min(100, max(1, limit)),
+                "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}],
+            }
+        )
+    except APIResponseError as e:
+        print(f"[warn] backfill query failed: {e}")
+        return
+    for page in res.get("results", []):
+        pid = page.get("id")
+        props = page.get("properties", {})
+        title = None
+        if "Name" in props and props["Name"].get("title"):
+            title = props["Name"]["title"][0].get("plain_text")
+        url = None
+        if "URL" in props and props["URL"].get("url"):
+            url = props["URL"]["url"]
+        if not pid or not url:
+            continue
+        try:
+            blocks = notion.blocks.children.list(block_id=pid, page_size=10)
+            has_section = False
+            for b in blocks.get("results", []):
+                t = b.get("type")
+                if t == "heading_2":
+                    texts = b.get(t, {}).get("rich_text", [])
+                    label = "".join([x.get("plain_text", "") for x in texts])
+                    if "요약" in label or "번역" in label:
+                        has_section = True
+                        break
+            if has_section:
+                continue
+        except APIResponseError as e:
+            print(f"[warn] backfill blocks list failed: {e}")
+            continue
+
+        # Generate translation content
+        page_mode = os.getenv("PAGE_CONTENT_MODE", "translate").lower()
+        mode_for_llm = "translate" if page_mode in ("translate", "translation") else ("detailed" if page_mode == "detailed" else "short")
+        text = summarize_with_openai(title or "", url, None, lang=os.getenv("SUMMARY_LANGUAGE", "ko"), mode=mode_for_llm)
+        if not text:
+            continue
+        heading_label = "번역 (KR)" if mode_for_llm == "translate" else "요약 (KR)"
+        children = [
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": heading_label}}]},
+            }
+        ]
+        if mode_for_llm == "translate":
+            for para in [p.strip() for p in (text.split("\n\n") or []) if p.strip()]:
+                children.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": para}}]},
+                })
+        else:
+            for line in [l.strip("- •\t ") for l in (text.splitlines() or []) if l.strip()]:
+                children.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line}}]},
+                })
+        try:
+            notion.blocks.children.append(block_id=pid, children=children)
+            print(f"  ↳ backfilled content for page: {title}")
+        except APIResponseError as e:
+            print(f"  ↳ [warn] backfill append failed: {e}")
+
 
 if __name__ == "__main__":
     main()
+    # Optional backfill for existing pages
+    try:
+        if os.getenv("BACKFILL_EXISTING", "false").lower() in ("1", "true", "yes"):
+            limit = int(os.getenv("BACKFILL_LIMIT", "20"))
+            notion = NotionClient(auth=os.getenv("NOTION_TOKEN"))
+            dbid = os.getenv("NOTION_DATABASE_ID")
+            # normalize
+            import re
+            m = re.search(r"([0-9a-fA-F]{32})", (dbid or "").replace("-", ""))
+            if m:
+                dbid = m.group(1)
+            if notion and dbid:
+                backfill_page_content(notion, dbid, limit)
+    except Exception:
+        pass
