@@ -2,8 +2,9 @@ name: GeekNews to Notion
 
 on:
   schedule:
-    - cron: "0 23 * * *" # 08:00 KST (UTC+9)
-    - cron: "0 11 * * *" # 20:00 KST (UTC+9)
+    # Runs at 09:00 and 21:00 KST daily (00:00, 12:00 UTC)
+    - cron: "0 0 * * *"   # 09:00 KST (UTC+9)
+    - cron: "0 12 * * *"  # 21:00 KST (UTC+9)
   workflow_dispatch: {}
 
 concurrency:
