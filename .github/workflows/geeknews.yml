@@ -31,17 +31,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sanity check secrets
+      - name: Sanity check secrets/vars
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || vars.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID || vars.NOTION_DATABASE_ID }}
         run: |
-          test -n "${{ secrets.NOTION_TOKEN }}" || (echo "NOTION_TOKEN secret is missing" && exit 1)
-          test -n "${{ secrets.NOTION_DATABASE_ID }}" || (echo "NOTION_DATABASE_ID secret is missing" && exit 1)
+          test -n "$NOTION_TOKEN" || (echo "NOTION_TOKEN is missing (set in Secrets or Variables)" && exit 1)
+          test -n "$NOTION_DATABASE_ID" || (echo "NOTION_DATABASE_ID is missing (set in Secrets or Variables)" && exit 1)
 
       - name: Run importer
         env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || vars.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID || vars.NOTION_DATABASE_ID }}
           # Optional
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || vars.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           FEED_URL: ${{ vars.FEED_URL }}
           SUMMARY_LANGUAGE: ${{ vars.SUMMARY_LANGUAGE }}
