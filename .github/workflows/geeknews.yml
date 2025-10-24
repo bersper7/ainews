@@ -64,4 +64,5 @@ jobs:
           : "${BACKFILL_LIMIT:=30}"
           : "${SUMMARY_LANGUAGE:=ko}"
           : "${MAX_ITEMS:=30}"
+          : "${FEED_URL:=https://news.hada.io/rss}"
           python geeknews_to_notion.py

@@ -104,18 +104,33 @@ def fetch_main_text(url: str, timeout: int = 20) -> Optional[str]:
         return None
 
 
+def _db_query(notion: NotionClient, database_id: str, payload: dict):
+    # Handle SDK differences (query vs query_database)
+    if hasattr(notion.databases, "query"):
+        return notion.databases.query(**{"database_id": database_id, **payload})
+    if hasattr(notion.databases, "query_database"):
+        # older SDKs used positional database_id and body
+        body = {k: v for k, v in payload.items() if k != "page_size" or v is not None}
+        return notion.databases.query_database(database_id, **body)
+    raise AttributeError("Notion client has no databases.query method")
+
+
 def notion_find_by_url(notion: NotionClient, database_id: str, url: str) -> bool:
     try:
-        res = notion.databases.query(
-            **{
-                "database_id": database_id,
+        res = _db_query(
+            notion,
+            database_id,
+            {
                 "filter": {"property": "URL", "url": {"equals": url}},
                 "page_size": 1,
-            }
+            },
         )
         return len(res.get("results", [])) > 0
     except APIResponseError as e:
         print(f"[warn] Notion query failed: {e}")
+        return False
+    except AttributeError as e:
+        print(f"[warn] Notion SDK too old for query; skip dedup: {e}")
         return False
 
 
@@ -218,7 +233,8 @@ def main():
         return s
 
     database_id = normalize_db_id(os.getenv("NOTION_DATABASE_ID"))
-    feed_url = os.getenv("FEED_URL", "https://news.hada.io/rss")
+    # Treat empty env as unset
+    feed_url = os.getenv("FEED_URL") or "https://news.hada.io/rss"
     summary_lang = os.getenv("SUMMARY_LANGUAGE", "ko")
     max_items = int(os.getenv("MAX_ITEMS", "30"))
 
@@ -432,12 +448,13 @@ def main():
 def backfill_page_content(notion: NotionClient, database_id: str, limit: int = 20):
     # Query recent pages and add content if missing
     try:
-        res = notion.databases.query(
-            **{
-                "database_id": database_id,
+        res = _db_query(
+            notion,
+            database_id,
+            {
                 "page_size": min(100, max(1, limit)),
                 "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}],
-            }
+            },
         )
     except APIResponseError as e:
         print(f"[warn] backfill query failed: {e}")
